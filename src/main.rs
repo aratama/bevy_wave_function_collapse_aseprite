@@ -7,16 +7,23 @@ use bevy::{
     ecs::world::CommandQueue,
     image::ImageSamplerDescriptor,
     prelude::*,
-    tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task},
+    tasks::{block_on, poll_once, AsyncComputeTaskPool, Task},
 };
 use bevy_aseprite_ultra::prelude::*;
-use wave_function_collupse::{
-    generating_adjacency_rules, pick_cell_with_least_entropy, random_selection_of_sockets,
-    wave_collapse, Cell, Tile, DIM, SLICE_HEIGHT, SLICE_WIDTH,
-};
+use rand::{rngs::StdRng, Rng};
+use wave_function_collupse::{generating_adjacency_rules, run_wave_function_collapse, Cell, Tile};
+
+/// 生成するグリッドの縦横のセル数
+const DIMENSION: usize = 16;
+
+/// タイルの縦横のピクセルサイズ
+const TILE_SIZE: u32 = 16;
 
 #[derive(Resource)]
 pub struct SourceImage(Handle<Aseprite>);
+
+#[derive(Component)]
+struct WaveFunctionCollapseTask(Task<CommandQueue>);
 
 fn main() {
     App::new()
@@ -25,7 +32,10 @@ fn main() {
         }))
         .add_plugins(AsepriteUltraPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, update.run_if(resource_exists::<SourceImage>))
+        .add_systems(
+            Update,
+            run_wave_function_collupse_task.run_if(resource_exists::<SourceImage>),
+        )
         .add_systems(Update, rebuild)
         .add_systems(Update, handle_tasks)
         .run();
@@ -35,8 +45,8 @@ fn setup(mut commands: Commands, server: Res<AssetServer>) {
     commands.spawn((
         Camera2d,
         Transform::from_xyz(
-            SLICE_WIDTH as f32 * DIM as f32 / 2.0,
-            SLICE_HEIGHT as f32 * DIM as f32 / -2.0,
+            TILE_SIZE as f32 * DIMENSION as f32 / 2.0,
+            TILE_SIZE as f32 * DIMENSION as f32 / -2.0,
             0.0,
         )
         .with_scale(Vec3::splat(0.4)),
@@ -58,10 +68,7 @@ fn rebuild(
     }
 }
 
-#[derive(Component)]
-struct ComputeTransform(Task<CommandQueue>);
-
-fn update(
+fn run_wave_function_collupse_task(
     mut commands: Commands,
     aseprites: Res<Assets<Aseprite>>,
     source: Res<SourceImage>,
@@ -69,77 +76,81 @@ fn update(
 ) {
     if let Some(aseprite) = aseprites.get(source.0.id()) {
         if let Some(image) = images.get(aseprite.atlas_image.id()) {
-            // ソースの画像の読み込みが完了したらグリッドを初期化
             commands.remove_resource::<SourceImage>();
 
+            // ソースの画像の読み込みが完了したらタイルを初期化
             let mut tiles: Vec<Tile> = Vec::new();
 
-            let aseplite_cloned = source.0.clone();
-
+            // Asepriteファイルからすべてのスライスを取得し、タイルに変換します
             for (slice_name, slice_meta) in aseprite.slices.iter() {
-                if slice_meta.rect.width() as u32 != SLICE_WIDTH
-                    || slice_meta.rect.height() as u32 != SLICE_HEIGHT
+                if slice_meta.rect.width() as u32 != TILE_SIZE
+                    || slice_meta.rect.height() as u32 != TILE_SIZE
                 {
-                    error!("slice size is not 16x16");
-                    continue;
+                    error!("slice size is not {}x{}", TILE_SIZE, TILE_SIZE);
                 }
-
-                tiles.push(Tile {
-                    slice_name: slice_name.clone(),
-                    rect: slice_meta.rect,
-                    up: Vec::new(),
-                    right: Vec::new(),
-                    down: Vec::new(),
-                    left: Vec::new(),
-                });
+                tiles.push(Tile::new(slice_name.clone(), slice_meta.rect));
             }
 
-            // スライスはランダムになっているので注意
+            // スライスはランダムな順序になっているので注意
+            // 通路のない空白のタイルが0番目になるようにソートします
             tiles.sort_by(|a, b| a.slice_name.cmp(&b.slice_name));
 
-            generating_adjacency_rules(&mut tiles, &image);
+            // 隣接関係を生成します
+            generating_adjacency_rules(&mut tiles, &image, TILE_SIZE);
 
-            let mut grid: Vec<Cell> = init_grid(aseprite.slices.len());
-
-            // let seed: [u8; 32] = [13; 32];
-            // let rng = rand::SeedableRng::from_seed(seed);
-            let mut rng = rand::SeedableRng::from_entropy();
-
+            // タイルの生成までは Aseprite のインスタンスを参照するので、
+            // ライフタイムの問題により非同期タスクの内部では実行できません
+            // ここから非同期タスクを開始します
+            let aseplite_cloned = source.0.clone();
             let thread_pool = AsyncComputeTaskPool::get();
             let entity = commands.spawn_empty().id();
             let task: Task<CommandQueue> = thread_pool.spawn(async move {
-                loop {
-                    // エントロピーの低い(socketsが少ない、最も選択肢の少ない)セルを選択
-                    let mut low_entropy_grid = pick_cell_with_least_entropy(&mut grid);
+                // 結果を再現可能にするにはシードを指定して乱数生成器を初期化します
+                // let seed: [u8; 32] = [42; 32];
+                // let mut rng = rand::SeedableRng::from_seed(seed);
+                let mut rng: StdRng = rand::SeedableRng::from_entropy();
 
-                    if low_entropy_grid.is_empty() {
-                        break;
+                // グリッドを初期化します
+                // 最初はすべてのセルがすべてのソケットを持っている状態(どのセルもどのタイルへと崩壊する可能性がある)です
+                let mut initial: Vec<Cell> = (0..DIMENSION * DIMENSION)
+                    .map(|index| Cell::from_value(index, tiles.len()))
+                    .collect();
+
+                // 行き止まりの通路が生成されないように、外周のセルを空白タイルにします
+                // また、通路や部屋の密度が高くなりすぎないように、ランダムに空白タイルを設定します
+                for cell in initial.iter_mut() {
+                    let x = cell.index % DIMENSION;
+                    let y = cell.index / DIMENSION;
+                    if x == 0
+                        || y == 0
+                        || x == DIMENSION - 1
+                        || y == DIMENSION - 1
+                        || rng.gen::<u32>() % 4 == 0
+                    {
+                        cell.collapsed = true;
+                        cell.sockets = vec![0];
                     }
-
-                    // 候補からひとつをランダムに選択
-                    if !random_selection_of_sockets(&mut rng, &mut low_entropy_grid) {
-                        // 候補が見つからない場合は最初からやり直し
-                        grid = init_grid(tiles.len());
-                        // warn!("restart");
-                        continue;
-                    }
-
-                    wave_collapse(&mut grid, &tiles);
                 }
 
+                // 波動関数の崩壊を実行します
+                // サイズによってはこれに数秒かかる場合があります
+                let collapsed = run_wave_function_collapse(&initial, &tiles, &mut rng, DIMENSION);
+
+                // 崩壊が完了したらスプライトを生成して結果を表示します
                 let mut command_queue = CommandQueue::default();
                 command_queue.push(move |world: &mut World| {
-                    world.entity_mut(entity).remove::<ComputeTransform>();
+                    // 完了したタスクは忘れずに削除しておきます
+                    world.entity_mut(entity).despawn_recursive();
 
-                    for cell in grid.iter() {
+                    for cell in collapsed.iter() {
                         world.spawn((
                             AseSpriteSlice {
                                 aseprite: aseplite_cloned.clone(),
                                 name: tiles[cell.sockets[0]].slice_name.clone(),
                             },
                             Transform::from_translation(Vec3::new(
-                                (cell.index % DIM) as f32 * SLICE_WIDTH as f32,
-                                (cell.index / DIM) as f32 * SLICE_HEIGHT as f32 * -1.0,
+                                (cell.index % DIMENSION) as f32 * TILE_SIZE as f32,
+                                (cell.index / DIMENSION) as f32 * TILE_SIZE as f32 * -1.0,
                                 0.0,
                             )),
                         ));
@@ -147,33 +158,18 @@ fn update(
                 });
                 command_queue
             });
-            commands.entity(entity).insert(ComputeTransform(task));
+            commands
+                .entity(entity)
+                .insert(WaveFunctionCollapseTask(task));
         }
     }
 }
 
-fn handle_tasks(mut commands: Commands, mut transform_tasks: Query<&mut ComputeTransform>) {
+fn handle_tasks(mut commands: Commands, mut transform_tasks: Query<&mut WaveFunctionCollapseTask>) {
     for mut task in transform_tasks.iter_mut() {
-        if let Some(mut commands_queue) = block_on(future::poll_once(&mut task.0)) {
+        if let Some(mut commands_queue) = block_on(poll_once(&mut task.0)) {
             // append the returned command queue to have it execute later
             commands.append(&mut commands_queue);
         }
     }
-}
-
-fn init_grid(length: usize) -> Vec<Cell> {
-    let mut grid: Vec<Cell> = (0..DIM * DIM)
-        .map(|index| Cell::from_value(index, length))
-        .collect();
-
-    for cell in grid.iter_mut() {
-        let x = cell.index % DIM;
-        let y = cell.index / DIM;
-        if x == 0 || y == 0 || x == DIM - 1 || y == DIM - 1 || rand::random::<u32>() % 6 == 0 {
-            cell.collapsed = true;
-            cell.sockets = vec![0];
-        }
-    }
-
-    grid
 }

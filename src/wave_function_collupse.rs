@@ -4,10 +4,6 @@
 use bevy::prelude::*;
 use rand::prelude::SliceRandom;
 
-pub const SLICE_WIDTH: u32 = 16;
-pub const SLICE_HEIGHT: u32 = 16;
-pub const DIM: usize = 16;
-
 #[derive(Debug, Clone)]
 pub struct Tile {
     pub slice_name: String,
@@ -17,6 +13,19 @@ pub struct Tile {
     pub right: Vec<usize>,
     pub down: Vec<usize>,
     pub left: Vec<usize>,
+}
+
+impl Tile {
+    pub fn new(slice_name: String, rect: Rect) -> Tile {
+        Tile {
+            slice_name,
+            rect,
+            up: Vec::new(),
+            right: Vec::new(),
+            down: Vec::new(),
+            left: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -48,8 +57,9 @@ impl Cell {
     }
 }
 
-pub fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image) {
-    // 他のタイルと辺を比較し、接続可能かどうかを調べます
+/// 他のタイルと辺のピクセルを比較し、
+/// 完全に一致した場合は接続可能としてタイル四方のソケットに追加します
+pub fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image, tile_size: u32) {
     let cloned = tiles.clone();
     for current in tiles.iter_mut() {
         for (dest_index, dest) in cloned.iter().enumerate() {
@@ -62,6 +72,7 @@ pub fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image) {
                 dest.rect.max.y as u32 - 1,
                 1,
                 0,
+                tile_size,
             ) {
                 current.up.push(dest_index);
             }
@@ -75,6 +86,7 @@ pub fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image) {
                 dest.rect.min.y as u32,
                 1,
                 0,
+                tile_size,
             ) {
                 current.down.push(dest_index);
             }
@@ -89,6 +101,7 @@ pub fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image) {
                 dest.rect.min.y as u32,
                 0,
                 1,
+                tile_size,
             ) {
                 current.left.push(dest_index);
             }
@@ -102,6 +115,7 @@ pub fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image) {
                 dest.rect.min.y as u32,
                 0,
                 1,
+                tile_size,
             ) {
                 current.right.push(dest_index);
             }
@@ -109,7 +123,7 @@ pub fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image) {
     }
 }
 
-pub fn compare_edge(
+fn compare_edge(
     image: &Image,
     source_x: u32,
     source_y: u32,
@@ -117,8 +131,9 @@ pub fn compare_edge(
     dest_y: u32,
     dx: u32,
     dy: u32,
+    tile_size: u32,
 ) -> bool {
-    for i in 0..SLICE_WIDTH {
+    for i in 0..tile_size {
         let dxi = dx * i;
         let dyi = dy * i;
         let source_color = image.get_color_at(source_x + dxi, source_y + dyi).unwrap();
@@ -130,7 +145,7 @@ pub fn compare_edge(
     true
 }
 
-pub fn pick_cell_with_least_entropy(grid: &mut Vec<Cell>) -> Vec<&mut Cell> {
+fn pick_cell_with_least_entropy(grid: &mut Vec<Cell>) -> Vec<&mut Cell> {
     let mut grid_copy: Vec<&mut Cell> = Vec::new();
 
     for cell in grid.iter_mut() {
@@ -153,7 +168,7 @@ pub fn pick_cell_with_least_entropy(grid: &mut Vec<Cell>) -> Vec<&mut Cell> {
     grid_copy
 }
 
-pub fn random_selection_of_sockets(
+fn random_selection_of_sockets(
     mut rng: &mut rand::rngs::StdRng,
     grid_target: &mut Vec<&mut Cell>,
 ) -> bool {
@@ -174,12 +189,12 @@ pub fn random_selection_of_sockets(
     }
 }
 
-pub fn wave_collapse(grid: &mut Vec<Cell>, tiles: &Vec<Tile>) {
-    let mut next_grid: Vec<Option<Cell>> = vec![None; DIM * DIM];
+fn wave_collapse(grid: &mut Vec<Cell>, tiles: &Vec<Tile>, dimension: usize) {
+    let mut next_grid: Vec<Option<Cell>> = vec![None; dimension * dimension];
 
-    for j in 0..DIM {
-        for i in 0..DIM {
-            let index = i + j * DIM;
+    for j in 0..dimension {
+        for i in 0..dimension {
+            let index = i + j * dimension;
 
             if grid[index].collapsed {
                 next_grid[index] = Some(grid[index].clone());
@@ -187,19 +202,39 @@ pub fn wave_collapse(grid: &mut Vec<Cell>, tiles: &Vec<Tile>) {
                 let mut sockets: Vec<usize> = (0..tiles.len()).collect();
                 // Look up
                 if j > 0 {
-                    cell_collapse(&mut grid[i + (j - 1) * DIM], "down", &mut sockets, tiles);
+                    cell_collapse(
+                        &mut grid[i + (j - 1) * dimension],
+                        "down",
+                        &mut sockets,
+                        tiles,
+                    );
                 }
                 // Look right
-                if i < DIM - 1 {
-                    cell_collapse(&mut grid[i + 1 + j * DIM], "left", &mut sockets, tiles);
+                if i < dimension - 1 {
+                    cell_collapse(
+                        &mut grid[i + 1 + j * dimension],
+                        "left",
+                        &mut sockets,
+                        tiles,
+                    );
                 }
                 // Look down
-                if j < DIM - 1 {
-                    cell_collapse(&mut grid[i + (j + 1) * DIM], "up", &mut sockets, tiles);
+                if j < dimension - 1 {
+                    cell_collapse(
+                        &mut grid[i + (j + 1) * dimension],
+                        "up",
+                        &mut sockets,
+                        tiles,
+                    );
                 }
                 // Look left
                 if i > 0 {
-                    cell_collapse(&mut grid[i - 1 + j * DIM], "right", &mut sockets, tiles);
+                    cell_collapse(
+                        &mut grid[i - 1 + j * dimension],
+                        "right",
+                        &mut sockets,
+                        tiles,
+                    );
                 }
 
                 next_grid[index] = Some(Cell::from_list(index, sockets));
@@ -233,4 +268,34 @@ fn get_valid_sockets(cell: &Cell, direction: &str, tiles: &[Tile]) -> Vec<usize>
         valid_sockets.extend(valid);
     }
     valid_sockets
+}
+
+pub fn run_wave_function_collapse(
+    initial: &Vec<Cell>,
+    tiles: &Vec<Tile>,
+    mut rng: &mut rand::rngs::StdRng,
+    dimension: usize,
+) -> Vec<Cell> {
+    let mut grid: Vec<Cell> = initial.clone();
+
+    loop {
+        // エントロピーの低い(socketsが少ない、最も選択肢の少ない)セルを選択
+        let mut low_entropy_grid = pick_cell_with_least_entropy(&mut grid);
+
+        if low_entropy_grid.is_empty() {
+            break;
+        }
+
+        // 候補からひとつをランダムに選択
+        if !random_selection_of_sockets(&mut rng, &mut low_entropy_grid) {
+            // 候補が見つからない場合は最初からやり直し
+            grid = initial.clone();
+            // warn!("restart");
+            continue;
+        }
+
+        wave_collapse(&mut grid, &tiles, dimension);
+    }
+
+    grid
 }
