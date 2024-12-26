@@ -6,7 +6,7 @@ use rand::prelude::SliceRandom;
 
 pub const SLICE_WIDTH: u32 = 16;
 pub const SLICE_HEIGHT: u32 = 16;
-pub const DIM: usize = 8;
+pub const DIM: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct Tile {
@@ -51,61 +51,59 @@ impl Cell {
 pub fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image) {
     // 他のタイルと辺を比較し、接続可能かどうかを調べます
     let cloned = tiles.clone();
-    for (current_index, current) in tiles.iter_mut().enumerate() {
+    for current in tiles.iter_mut() {
         for (dest_index, dest) in cloned.iter().enumerate() {
-            if current_index != dest_index {
-                // 上辺
-                if compare_edge(
-                    &image,
-                    current.rect.min.x as u32,
-                    current.rect.min.y as u32,
-                    dest.rect.min.x as u32,
-                    dest.rect.max.y as u32 - 1,
-                    1,
-                    0,
-                ) {
-                    current.up.push(dest_index);
-                }
+            // 上辺
+            if compare_edge(
+                &image,
+                current.rect.min.x as u32,
+                current.rect.min.y as u32,
+                dest.rect.min.x as u32,
+                dest.rect.max.y as u32 - 1,
+                1,
+                0,
+            ) {
+                current.up.push(dest_index);
+            }
 
-                // 下辺
-                if compare_edge(
-                    &image,
-                    current.rect.min.x as u32,
-                    current.rect.max.y as u32 - 1,
-                    dest.rect.min.x as u32,
-                    dest.rect.min.y as u32,
-                    1,
-                    0,
-                ) {
-                    current.down.push(dest_index);
-                }
+            // 下辺
+            if compare_edge(
+                &image,
+                current.rect.min.x as u32,
+                current.rect.max.y as u32 - 1,
+                dest.rect.min.x as u32,
+                dest.rect.min.y as u32,
+                1,
+                0,
+            ) {
+                current.down.push(dest_index);
+            }
 
-                // 左辺
+            // 左辺
 
-                if compare_edge(
-                    &image,
-                    current.rect.min.x as u32,
-                    current.rect.min.y as u32,
-                    dest.rect.max.x as u32 - 1,
-                    dest.rect.min.y as u32,
-                    0,
-                    1,
-                ) {
-                    current.left.push(dest_index);
-                }
+            if compare_edge(
+                &image,
+                current.rect.min.x as u32,
+                current.rect.min.y as u32,
+                dest.rect.max.x as u32 - 1,
+                dest.rect.min.y as u32,
+                0,
+                1,
+            ) {
+                current.left.push(dest_index);
+            }
 
-                // 右辺
-                if compare_edge(
-                    &image,
-                    current.rect.max.x as u32 - 1,
-                    current.rect.min.y as u32,
-                    dest.rect.min.x as u32,
-                    dest.rect.min.y as u32,
-                    0,
-                    1,
-                ) {
-                    current.right.push(dest_index);
-                }
+            // 右辺
+            if compare_edge(
+                &image,
+                current.rect.max.x as u32 - 1,
+                current.rect.min.y as u32,
+                dest.rect.min.x as u32,
+                dest.rect.min.y as u32,
+                0,
+                1,
+            ) {
+                current.right.push(dest_index);
             }
         }
     }

@@ -166,14 +166,14 @@ fn init_grid(length: usize) -> Vec<Cell> {
         .map(|index| Cell::from_value(index, length))
         .collect();
 
-    // for cell in grid.iter_mut() {
-    //     let x = cell.index % DIM;
-    //     let y = cell.index / DIM;
-    //     if x == 0 {
-    //         cell.collapsed = true;
-    //         cell.sockets = vec![0];
-    //     }
-    // }
+    for cell in grid.iter_mut() {
+        let x = cell.index % DIM;
+        let y = cell.index / DIM;
+        if x == 0 || y == 0 || x == DIM - 1 || y == DIM - 1 || rand::random::<u32>() % 6 == 0 {
+            cell.collapsed = true;
+            cell.sockets = vec![0];
+        }
+    }
 
     grid
 }
