@@ -51,7 +51,7 @@ See examples for more details.
 # Running Example
 
 ```bash
-$ cargo run --example basic
+$ cargo run --example task
 ```
 
 # Credits
