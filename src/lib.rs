@@ -2,6 +2,7 @@
 // https://qiita.com/panicdragon/items/5a02d3d1470179d77ece
 
 use bevy::prelude::*;
+use bevy_aseprite_ultra::prelude::Aseprite;
 use rand::prelude::SliceRandom;
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,35 @@ impl Tile {
             left: Vec::new(),
         }
     }
+}
+
+pub type Tileset = Vec<Tile>;
+
+/// Asepriteファイルと画像からタイルセットを生成します
+pub fn generate_tiles_from_aseprite(aseprite: &Aseprite, image: &Image) -> Tileset {
+    // ソースの画像の読み込みが完了したらタイルを初期化
+    let mut tiles: Tileset = Vec::new();
+
+    let tile_size = aseprite.slices.iter().next().unwrap().1.rect.width() as u32;
+
+    // Asepriteファイルからすべてのスライスを取得し、タイルに変換します
+    for (slice_name, slice_meta) in aseprite.slices.iter() {
+        if slice_meta.rect.width() as u32 != tile_size
+            || slice_meta.rect.height() as u32 != tile_size
+        {
+            error!("slice size is not {}x{}", tile_size, tile_size);
+        }
+        tiles.push(Tile::new(slice_name.clone(), slice_meta.rect));
+    }
+
+    // スライスはランダムな順序になっているので注意
+    // 通路のない空白のタイルが0番目になるようにソートします
+    tiles.sort_by(|a, b| a.slice_name.cmp(&b.slice_name));
+
+    // 隣接関係を生成します
+    generating_adjacency_rules(&mut tiles, &image, tile_size);
+
+    tiles
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +89,7 @@ impl Cell {
 
 /// 他のタイルと辺のピクセルを比較し、
 /// 完全に一致した場合は接続可能としてタイル四方のソケットに追加します
-pub fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image, tile_size: u32) {
+pub fn generating_adjacency_rules(tiles: &mut Tileset, image: &Image, tile_size: u32) {
     let cloned = tiles.clone();
     for current in tiles.iter_mut() {
         for (dest_index, dest) in cloned.iter().enumerate() {
@@ -189,7 +219,7 @@ fn random_selection_of_sockets(
     }
 }
 
-fn wave_collapse(grid: &mut Vec<Cell>, tiles: &Vec<Tile>, dimension: usize) {
+fn wave_collapse(grid: &mut Vec<Cell>, tiles: &Tileset, dimension: usize) {
     let mut next_grid: Vec<Option<Cell>> = vec![None; dimension * dimension];
 
     for j in 0..dimension {
@@ -272,7 +302,7 @@ fn get_valid_sockets(cell: &Cell, direction: &str, tiles: &[Tile]) -> Vec<usize>
 
 pub fn run_wave_function_collapse(
     initial: &Vec<Cell>,
-    tiles: &Vec<Tile>,
+    tiles: &Tileset,
     mut rng: &mut rand::rngs::StdRng,
     dimension: usize,
 ) -> Vec<Cell> {

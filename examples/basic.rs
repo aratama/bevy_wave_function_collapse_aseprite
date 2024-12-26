@@ -1,8 +1,6 @@
 // https://github.com/webcyou-org/wave-function-collapse-rust
 // https://qiita.com/panicdragon/items/5a02d3d1470179d77ece
 
-mod wave_function_collupse;
-
 use bevy::{
     ecs::world::CommandQueue,
     image::ImageSamplerDescriptor,
@@ -10,8 +8,10 @@ use bevy::{
     tasks::{block_on, poll_once, AsyncComputeTaskPool, Task},
 };
 use bevy_aseprite_ultra::prelude::*;
+use bevy_wave_function_collapse_aseprite::{
+    generate_tiles_from_aseprite, run_wave_function_collapse, Cell, Tileset,
+};
 use rand::{rngs::StdRng, Rng};
-use wave_function_collupse::{generating_adjacency_rules, run_wave_function_collapse, Cell, Tile};
 
 /// 生成するグリッドの縦横のセル数
 const DIMENSION: usize = 16;
@@ -78,25 +78,8 @@ fn run_wave_function_collupse_task(
         if let Some(image) = images.get(aseprite.atlas_image.id()) {
             commands.remove_resource::<SourceImage>();
 
-            // ソースの画像の読み込みが完了したらタイルを初期化
-            let mut tiles: Vec<Tile> = Vec::new();
-
-            // Asepriteファイルからすべてのスライスを取得し、タイルに変換します
-            for (slice_name, slice_meta) in aseprite.slices.iter() {
-                if slice_meta.rect.width() as u32 != TILE_SIZE
-                    || slice_meta.rect.height() as u32 != TILE_SIZE
-                {
-                    error!("slice size is not {}x{}", TILE_SIZE, TILE_SIZE);
-                }
-                tiles.push(Tile::new(slice_name.clone(), slice_meta.rect));
-            }
-
-            // スライスはランダムな順序になっているので注意
-            // 通路のない空白のタイルが0番目になるようにソートします
-            tiles.sort_by(|a, b| a.slice_name.cmp(&b.slice_name));
-
-            // 隣接関係を生成します
-            generating_adjacency_rules(&mut tiles, &image, TILE_SIZE);
+            // ソースの画像の読み込みが完了したらタイルセットを初期化
+            let tileset: Tileset = generate_tiles_from_aseprite(&aseprite, &image);
 
             // タイルの生成までは Aseprite のインスタンスを参照するので、
             // ライフタイムの問題により非同期タスクの内部では実行できません
@@ -113,7 +96,7 @@ fn run_wave_function_collupse_task(
                 // グリッドを初期化します
                 // 最初はすべてのセルがすべてのソケットを持っている状態(どのセルもどのタイルへと崩壊する可能性がある)です
                 let mut initial: Vec<Cell> = (0..DIMENSION * DIMENSION)
-                    .map(|index| Cell::from_value(index, tiles.len()))
+                    .map(|index| Cell::from_value(index, tileset.len()))
                     .collect();
 
                 // 行き止まりの通路が生成されないように、外周のセルを空白タイルにします
@@ -134,7 +117,7 @@ fn run_wave_function_collupse_task(
 
                 // 波動関数の崩壊を実行します
                 // サイズによってはこれに数秒かかる場合があります
-                let collapsed = run_wave_function_collapse(&initial, &tiles, &mut rng, DIMENSION);
+                let collapsed = run_wave_function_collapse(&initial, &tileset, &mut rng, DIMENSION);
 
                 // 崩壊が完了したらスプライトを生成して結果を表示します
                 let mut command_queue = CommandQueue::default();
@@ -146,7 +129,7 @@ fn run_wave_function_collupse_task(
                         world.spawn((
                             AseSpriteSlice {
                                 aseprite: aseplite_cloned.clone(),
-                                name: tiles[cell.sockets[0]].slice_name.clone(),
+                                name: tileset[cell.sockets[0]].slice_name.clone(),
                             },
                             Transform::from_translation(Vec3::new(
                                 (cell.index % DIMENSION) as f32 * TILE_SIZE as f32,

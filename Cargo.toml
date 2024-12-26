@@ -1,10 +1,12 @@
 [package]
-name = "bevy_wave_function_collapse"
+name = "bevy_wave_function_collapse_aseprite"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-async-std = "1.13.0"
 bevy = "0.15.0"
 bevy_aseprite_ultra = "0.4.1"
 rand = "0.8.5"
+
+[dev-dependencies]
+async-std = "1.13.0"
