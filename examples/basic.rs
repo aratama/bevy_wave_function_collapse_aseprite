@@ -9,7 +9,7 @@ use bevy::{
 };
 use bevy_aseprite_ultra::prelude::*;
 use bevy_wave_function_collapse_aseprite::{
-    generate_tiles_from_aseprite, run_wave_function_collapse, Cell, Tileset,
+    create_grid, generate_tiles_from_aseprite, run_wave_function_collapse, Grid, Tileset,
 };
 use rand::{rngs::StdRng, Rng};
 
@@ -70,8 +70,8 @@ fn rebuild(
 
 fn run_wave_function_collupse_task(
     mut commands: Commands,
-    aseprites: Res<Assets<Aseprite>>,
     source: Res<SourceImage>,
+    aseprites: Res<Assets<Aseprite>>,
     images: Res<Assets<Image>>,
 ) {
     if let Some(aseprite) = aseprites.get(source.0.id()) {
@@ -95,9 +95,7 @@ fn run_wave_function_collupse_task(
 
                 // グリッドを初期化します
                 // 最初はすべてのセルがすべてのソケットを持っている状態(どのセルもどのタイルへと崩壊する可能性がある)です
-                let mut initial: Vec<Cell> = (0..DIMENSION * DIMENSION)
-                    .map(|index| Cell::from_value(index, tileset.len()))
-                    .collect();
+                let mut initial: Grid = create_grid(&tileset, DIMENSION);
 
                 // 行き止まりの通路が生成されないように、外周のセルを空白タイルにします
                 // また、通路や部屋の密度が高くなりすぎないように、ランダムに空白タイルを設定します

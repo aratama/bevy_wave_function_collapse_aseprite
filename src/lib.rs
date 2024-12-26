@@ -31,7 +31,10 @@ impl Tile {
 
 pub type Tileset = Vec<Tile>;
 
+pub type Grid = Vec<Cell>;
+
 /// Asepriteファイルと画像からタイルセットを生成します
+/// スライスのサイズはすべて統一されている必要があります
 pub fn generate_tiles_from_aseprite(aseprite: &Aseprite, image: &Image) -> Tileset {
     // ソースの画像の読み込みが完了したらタイルを初期化
     let mut tiles: Tileset = Vec::new();
@@ -85,6 +88,12 @@ impl Cell {
             sockets: value,
         }
     }
+}
+
+pub fn create_grid(tileset: &Tileset, dimension: usize) -> Grid {
+    (0..dimension * dimension)
+        .map(|index| Cell::from_value(index, tileset.len()))
+        .collect()
 }
 
 /// 他のタイルと辺のピクセルを比較し、
@@ -301,12 +310,12 @@ fn get_valid_sockets(cell: &Cell, direction: &str, tiles: &[Tile]) -> Vec<usize>
 }
 
 pub fn run_wave_function_collapse(
-    initial: &Vec<Cell>,
+    initial: &Grid,
     tiles: &Tileset,
     mut rng: &mut rand::rngs::StdRng,
     dimension: usize,
-) -> Vec<Cell> {
-    let mut grid: Vec<Cell> = initial.clone();
+) -> Grid {
+    let mut grid: Grid = initial.clone();
 
     loop {
         // エントロピーの低い(socketsが少ない、最も選択肢の少ない)セルを選択
