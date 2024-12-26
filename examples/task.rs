@@ -8,9 +8,7 @@ use bevy::{
     tasks::{block_on, poll_once, AsyncComputeTaskPool, Task},
 };
 use bevy_aseprite_ultra::prelude::*;
-use bevy_wave_function_collapse_aseprite::{
-    create_grid, generate_tiles_from_aseprite, run_wave_function_collapse, Grid, Tileset,
-};
+use bevy_wave_function_collapse_aseprite::Grid;
 use rand::{rngs::StdRng, Rng};
 
 /// 生成するグリッドの縦横のセル数
@@ -79,7 +77,8 @@ fn run_wave_function_collupse_task(
             commands.remove_resource::<SourceImage>();
 
             // ソースの画像の読み込みが完了したらタイルセットを初期化
-            let tileset: Tileset = generate_tiles_from_aseprite(&aseprite, &image);
+            // 最初はすべてのセルがすべてのソケットを持っている状態(どのセルもどのタイルへと崩壊する可能性がある)です
+            let mut grid: Grid = Grid::new(&aseprite, &image, DIMENSION);
 
             // タイルの生成までは Aseprite のインスタンスを参照するので、
             // ライフタイムの問題により非同期タスクの内部では実行できません
@@ -93,13 +92,9 @@ fn run_wave_function_collupse_task(
                 // let mut rng = rand::SeedableRng::from_seed(seed);
                 let mut rng: StdRng = rand::SeedableRng::from_entropy();
 
-                // グリッドを初期化します
-                // 最初はすべてのセルがすべてのソケットを持っている状態(どのセルもどのタイルへと崩壊する可能性がある)です
-                let mut initial: Grid = create_grid(&tileset, DIMENSION);
-
                 // 行き止まりの通路が生成されないように、外周のセルを空白タイルにします
                 // また、通路や部屋の密度が高くなりすぎないように、ランダムに空白タイルを設定します
-                for cell in initial.iter_mut() {
+                for cell in grid.cells.iter_mut() {
                     let x = cell.index % DIMENSION;
                     let y = cell.index / DIMENSION;
                     if x == 0
@@ -115,27 +110,15 @@ fn run_wave_function_collupse_task(
 
                 // 波動関数の崩壊を実行します
                 // サイズによってはこれに数秒かかる場合があります
-                let collapsed = run_wave_function_collapse(&initial, &tileset, &mut rng, DIMENSION);
+                grid.collapse_with(&mut rng);
 
                 // 崩壊が完了したらスプライトを生成して結果を表示します
                 let mut command_queue = CommandQueue::default();
-                command_queue.push(move |world: &mut World| {
+                command_queue.push(move |mut world: &mut World| {
                     // 完了したタスクは忘れずに削除しておきます
                     world.entity_mut(entity).despawn_recursive();
 
-                    for cell in collapsed.iter() {
-                        world.spawn((
-                            AseSpriteSlice {
-                                aseprite: aseplite_cloned.clone(),
-                                name: tileset[cell.sockets[0]].slice_name.clone(),
-                            },
-                            Transform::from_translation(Vec3::new(
-                                (cell.index % DIMENSION) as f32 * TILE_SIZE as f32,
-                                (cell.index / DIMENSION) as f32 * TILE_SIZE as f32 * -1.0,
-                                0.0,
-                            )),
-                        ));
-                    }
+                    grid.spawn_with_world(&mut world, &aseplite_cloned);
                 });
                 command_queue
             });

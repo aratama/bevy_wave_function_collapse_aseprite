@@ -1,9 +1,6 @@
 use bevy::{image::ImageSamplerDescriptor, prelude::*};
 use bevy_aseprite_ultra::prelude::*;
-use bevy_wave_function_collapse_aseprite::{
-    create_grid, generate_tiles_from_aseprite, run_wave_function_collapse, Grid, Tileset,
-};
-use rand::rngs::StdRng;
+use bevy_wave_function_collapse_aseprite::Grid;
 
 const DIMENSION: usize = 16;
 
@@ -49,27 +46,11 @@ fn run_wave_function_collupse_task(
         if let Some(image) = images.get(aseprite.atlas_image.id()) {
             commands.remove_resource::<SourceImage>();
 
-            let tileset: Tileset = generate_tiles_from_aseprite(&aseprite, &image);
+            let mut grid = Grid::new(&aseprite, &image, DIMENSION);
 
-            let mut rng: StdRng = rand::SeedableRng::from_entropy();
+            grid.collapse();
 
-            let initial: Grid = create_grid(&tileset, DIMENSION);
-
-            let collapsed = run_wave_function_collapse(&initial, &tileset, &mut rng, DIMENSION);
-
-            for cell in collapsed.iter() {
-                commands.spawn((
-                    AseSpriteSlice {
-                        aseprite: source.0.clone(),
-                        name: tileset[cell.sockets[0]].slice_name.clone(),
-                    },
-                    Transform::from_translation(Vec3::new(
-                        (cell.index % DIMENSION) as f32 * TILE_SIZE as f32,
-                        (cell.index / DIMENSION) as f32 * TILE_SIZE as f32 * -1.0,
-                        0.0,
-                    )),
-                ));
-            }
+            grid.spawn(&mut commands, &source.0);
         }
     }
 }

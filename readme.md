@@ -10,40 +10,24 @@ Create tileset with Aseprite, run Wave Function Collapse, and display tiles with
 
 ![aseprite screenshot](docs/aseprite.png)
 
-#### 2. Generate Tilesets from Aseprite
+#### 2. Create Grid
 
 ```rust
-let tileset: Tileset = generate_tiles_from_aseprite(&aseprite, &image);
+let mut grid = Grid::new(&aseprite, &image, DIMENSION);
 ```
 
-#### 3. Create Initial Grid
+#### 3. Run Wave Function Collapse
 
 ```rust
-let mut grid: Grid = create_grid(&tileset, DIMENSION);
+grid.collapse();
 ```
 
-#### 4. Run Wave Function Collapse
+It may take few seconds...
+
+#### 4. Spawn Sprites
 
 ```rust
-let collapsed: Grid = run_wave_function_collapse(&grid, &tileset, &mut rng, DIMENSION);
-```
-
-#### 5. Display Result
-
-```rust
-for cell in collapsed.iter() {
-    commands.spawn((
-        AseSpriteSlice {
-            aseprite: aseplite.clone(),
-            name: tileset[cell.sockets[0]].slice_name.clone(),
-        },
-        Transform::from_translation(Vec3::new(
-            (cell.index % DIMENSION) as f32 * TILE_SIZE as f32,
-            (cell.index / DIMENSION) as f32 * TILE_SIZE as f32 * -1.0,
-            0.0,
-        )),
-    ));
-}
+grid.spawn_grid(&mut commands, &aseprite_handle);
 ```
 
 See examples for more details.

@@ -2,8 +2,8 @@
 // https://qiita.com/panicdragon/items/5a02d3d1470179d77ece
 
 use bevy::prelude::*;
-use bevy_aseprite_ultra::prelude::Aseprite;
-use rand::prelude::SliceRandom;
+use bevy_aseprite_ultra::prelude::{AseSpriteSlice, Aseprite};
+use rand::{prelude::SliceRandom, rngs::StdRng};
 
 #[derive(Debug, Clone)]
 pub struct Tile {
@@ -29,36 +29,49 @@ impl Tile {
     }
 }
 
-pub type Tileset = Vec<Tile>;
+#[derive(Clone)]
+pub struct Tileset {
+    pub tiles: Vec<Tile>,
+    pub tile_size: u32,
+}
 
-pub type Grid = Vec<Cell>;
+#[derive(Clone)]
+pub struct Grid {
+    pub tileset: Tileset,
+    pub cells: Vec<Cell>,
+    pub dimension: usize,
+}
 
-/// Asepriteファイルと画像からタイルセットを生成します
-/// スライスのサイズはすべて統一されている必要があります
-pub fn generate_tiles_from_aseprite(aseprite: &Aseprite, image: &Image) -> Tileset {
-    // ソースの画像の読み込みが完了したらタイルを初期化
-    let mut tiles: Tileset = Vec::new();
+impl Tileset {
+    /// Asepriteファイルと画像からタイルセットを生成します
+    /// スライスのサイズはすべて統一されている必要があります
+    pub fn new(aseprite: &Aseprite, image: &Image) -> Self {
+        // ソースの画像の読み込みが完了したらタイルを初期化
+        let mut tiles: Vec<Tile> = Vec::new();
 
-    let tile_size = aseprite.slices.iter().next().unwrap().1.rect.width() as u32;
+        let tile_size = aseprite.slices.iter().next().unwrap().1.rect.width() as u32;
 
-    // Asepriteファイルからすべてのスライスを取得し、タイルに変換します
-    for (slice_name, slice_meta) in aseprite.slices.iter() {
-        if slice_meta.rect.width() as u32 != tile_size
-            || slice_meta.rect.height() as u32 != tile_size
-        {
-            error!("slice size is not {}x{}", tile_size, tile_size);
+        // Asepriteファイルからすべてのスライスを取得し、タイルに変換します
+        for (slice_name, slice_meta) in aseprite.slices.iter() {
+            if slice_meta.rect.width() as u32 != tile_size
+                || slice_meta.rect.height() as u32 != tile_size
+            {
+                error!("slice size is not {}x{}", tile_size, tile_size);
+            }
+            tiles.push(Tile::new(slice_name.clone(), slice_meta.rect));
         }
-        tiles.push(Tile::new(slice_name.clone(), slice_meta.rect));
+
+        // スライスはランダムな順序になっているので注意
+        // 通路のない空白のタイルが0番目になるようにソートします
+        tiles.sort_by(|a, b| a.slice_name.cmp(&b.slice_name));
+
+        let mut tileset = Tileset { tiles, tile_size };
+
+        // 隣接関係を生成します
+        generating_adjacency_rules(&mut tileset, &image, tile_size);
+
+        tileset
     }
-
-    // スライスはランダムな順序になっているので注意
-    // 通路のない空白のタイルが0番目になるようにソートします
-    tiles.sort_by(|a, b| a.slice_name.cmp(&b.slice_name));
-
-    // 隣接関係を生成します
-    generating_adjacency_rules(&mut tiles, &image, tile_size);
-
-    tiles
 }
 
 #[derive(Debug, Clone)]
@@ -90,18 +103,25 @@ impl Cell {
     }
 }
 
-pub fn create_grid(tileset: &Tileset, dimension: usize) -> Grid {
-    (0..dimension * dimension)
-        .map(|index| Cell::from_value(index, tileset.len()))
-        .collect()
+impl Tileset {
+    pub fn create_grid(&self, dimension: usize) -> Grid {
+        let cells = (0..dimension * dimension)
+            .map(|index| Cell::from_value(index, self.tiles.len()))
+            .collect();
+        Grid {
+            tileset: self.clone(),
+            cells,
+            dimension,
+        }
+    }
 }
 
 /// 他のタイルと辺のピクセルを比較し、
 /// 完全に一致した場合は接続可能としてタイル四方のソケットに追加します
 pub fn generating_adjacency_rules(tiles: &mut Tileset, image: &Image, tile_size: u32) {
     let cloned = tiles.clone();
-    for current in tiles.iter_mut() {
-        for (dest_index, dest) in cloned.iter().enumerate() {
+    for current in tiles.tiles.iter_mut() {
+        for (dest_index, dest) in cloned.tiles.iter().enumerate() {
             // 上辺
             if compare_edge(
                 &image,
@@ -184,10 +204,10 @@ fn compare_edge(
     true
 }
 
-fn pick_cell_with_least_entropy(grid: &mut Vec<Cell>) -> Vec<&mut Cell> {
+fn pick_cell_with_least_entropy(cells: &mut Vec<Cell>) -> Vec<&mut Cell> {
     let mut grid_copy: Vec<&mut Cell> = Vec::new();
 
-    for cell in grid.iter_mut() {
+    for cell in cells.iter_mut() {
         if !cell.collapsed {
             grid_copy.push(cell);
         }
@@ -228,51 +248,51 @@ fn random_selection_of_sockets(
     }
 }
 
-fn wave_collapse(grid: &mut Vec<Cell>, tiles: &Tileset, dimension: usize) {
+fn wave_collapse(cells: &mut Vec<Cell>, dimension: usize, tileset: &Tileset) {
     let mut next_grid: Vec<Option<Cell>> = vec![None; dimension * dimension];
 
     for j in 0..dimension {
         for i in 0..dimension {
             let index = i + j * dimension;
 
-            if grid[index].collapsed {
-                next_grid[index] = Some(grid[index].clone());
+            if cells[index].collapsed {
+                next_grid[index] = Some(cells[index].clone());
             } else {
-                let mut sockets: Vec<usize> = (0..tiles.len()).collect();
+                let mut sockets: Vec<usize> = (0..tileset.tiles.len()).collect();
                 // Look up
                 if j > 0 {
                     cell_collapse(
-                        &mut grid[i + (j - 1) * dimension],
+                        &mut cells[i + (j - 1) * dimension],
                         "down",
                         &mut sockets,
-                        tiles,
+                        &tileset,
                     );
                 }
                 // Look right
                 if i < dimension - 1 {
                     cell_collapse(
-                        &mut grid[i + 1 + j * dimension],
+                        &mut cells[i + 1 + j * dimension],
                         "left",
                         &mut sockets,
-                        tiles,
+                        &tileset,
                     );
                 }
                 // Look down
                 if j < dimension - 1 {
                     cell_collapse(
-                        &mut grid[i + (j + 1) * dimension],
+                        &mut cells[i + (j + 1) * dimension],
                         "up",
                         &mut sockets,
-                        tiles,
+                        &tileset,
                     );
                 }
                 // Look left
                 if i > 0 {
                     cell_collapse(
-                        &mut grid[i - 1 + j * dimension],
+                        &mut cells[i - 1 + j * dimension],
                         "right",
                         &mut sockets,
-                        tiles,
+                        &tileset,
                     );
                 }
 
@@ -280,21 +300,21 @@ fn wave_collapse(grid: &mut Vec<Cell>, tiles: &Tileset, dimension: usize) {
             }
         }
     }
-    grid.clear();
-    grid.extend(next_grid.into_iter().filter_map(|cell| cell));
+    cells.clear();
+    cells.extend(next_grid.into_iter().filter_map(|cell| cell));
 }
 
 /// セルのsocketsのうち、接続不可能なものを削除します
-fn cell_collapse(cell: &Cell, direction: &str, sockets: &mut Vec<usize>, tiles: &[Tile]) {
+fn cell_collapse(cell: &Cell, direction: &str, sockets: &mut Vec<usize>, tiles: &Tileset) {
     let valid_sockets = get_valid_sockets(cell, direction, tiles);
     sockets.retain(|socket| valid_sockets.contains(socket));
 }
 
-fn get_valid_sockets(cell: &Cell, direction: &str, tiles: &[Tile]) -> Vec<usize> {
+fn get_valid_sockets(cell: &Cell, direction: &str, tiles: &Tileset) -> Vec<usize> {
     let mut valid_sockets = Vec::new();
 
     for &socket in &cell.sockets {
-        let tile = &tiles[socket];
+        let tile = &tiles.tiles[socket];
 
         let valid = match direction {
             "up" => tile.up.clone(),
@@ -309,32 +329,70 @@ fn get_valid_sockets(cell: &Cell, direction: &str, tiles: &[Tile]) -> Vec<usize>
     valid_sockets
 }
 
-pub fn run_wave_function_collapse(
-    initial: &Grid,
-    tiles: &Tileset,
-    mut rng: &mut rand::rngs::StdRng,
-    dimension: usize,
-) -> Grid {
-    let mut grid: Grid = initial.clone();
-
-    loop {
-        // エントロピーの低い(socketsが少ない、最も選択肢の少ない)セルを選択
-        let mut low_entropy_grid = pick_cell_with_least_entropy(&mut grid);
-
-        if low_entropy_grid.is_empty() {
-            break;
-        }
-
-        // 候補からひとつをランダムに選択
-        if !random_selection_of_sockets(&mut rng, &mut low_entropy_grid) {
-            // 候補が見つからない場合は最初からやり直し
-            grid = initial.clone();
-            // warn!("restart");
-            continue;
-        }
-
-        wave_collapse(&mut grid, &tiles, dimension);
+impl Grid {
+    pub fn new(aseprite: &Aseprite, image: &Image, dimension: usize) -> Self {
+        Tileset::new(aseprite, image).create_grid(dimension)
     }
 
-    grid
+    pub fn collapse_with(&mut self, mut rng: &mut rand::rngs::StdRng) {
+        let mut cells = self.cells.clone();
+
+        loop {
+            // エントロピーの低い(socketsが少ない、最も選択肢の少ない)セルを選択
+            let mut low_entropy_grid = pick_cell_with_least_entropy(&mut cells);
+
+            if low_entropy_grid.is_empty() {
+                break;
+            }
+
+            // 候補からひとつをランダムに選択
+            if !random_selection_of_sockets(&mut rng, &mut low_entropy_grid) {
+                // 候補が見つからない場合は最初からやり直し
+                cells = self.cells.clone();
+                // warn!("restart");
+                continue;
+            }
+
+            wave_collapse(&mut cells, self.dimension, &self.tileset);
+        }
+
+        self.cells = cells;
+    }
+
+    pub fn collapse(&mut self) {
+        let mut rng: StdRng = rand::SeedableRng::from_entropy();
+        self.collapse_with(&mut rng);
+    }
+
+    pub fn spawn(&self, commands: &mut Commands, aseprite: &Handle<Aseprite>) {
+        for cell in self.cells.iter() {
+            commands.spawn((
+                AseSpriteSlice {
+                    aseprite: aseprite.clone(),
+                    name: self.tileset.tiles[cell.sockets[0]].slice_name.clone(),
+                },
+                Transform::from_translation(Vec3::new(
+                    (cell.index % self.dimension) as f32 * self.tileset.tile_size as f32,
+                    (cell.index / self.dimension) as f32 * self.tileset.tile_size as f32 * -1.0,
+                    0.0,
+                )),
+            ));
+        }
+    }
+
+    pub fn spawn_with_world(&self, commands: &mut World, aseprite: &Handle<Aseprite>) {
+        for cell in self.cells.iter() {
+            commands.spawn((
+                AseSpriteSlice {
+                    aseprite: aseprite.clone(),
+                    name: self.tileset.tiles[cell.sockets[0]].slice_name.clone(),
+                },
+                Transform::from_translation(Vec3::new(
+                    (cell.index % self.dimension) as f32 * self.tileset.tile_size as f32,
+                    (cell.index / self.dimension) as f32 * self.tileset.tile_size as f32 * -1.0,
+                    0.0,
+                )),
+            ));
+        }
+    }
 }
