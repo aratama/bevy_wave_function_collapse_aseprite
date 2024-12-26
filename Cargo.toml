@@ -1,0 +1,9 @@
+[package]
+name = "bevy_wave_function_collapse"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.15.0"
+bevy_aseprite_ultra = "0.4.1"
+rand = "0.8.5"
