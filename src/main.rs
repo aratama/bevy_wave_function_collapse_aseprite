@@ -1,13 +1,18 @@
 // https://github.com/webcyou-org/wave-function-collapse-rust
 // https://qiita.com/panicdragon/items/5a02d3d1470179d77ece
 
-use bevy::{image::ImageSamplerDescriptor, prelude::*};
+use bevy::{
+    ecs::world::CommandQueue,
+    image::ImageSamplerDescriptor,
+    prelude::*,
+    tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task},
+};
 use bevy_aseprite_ultra::prelude::*;
 use rand::prelude::SliceRandom;
 
 const SLICE_WIDTH: u32 = 16;
 const SLICE_HEIGHT: u32 = 16;
-const DIM: usize = 6; // 2 x 2 のグリッド
+const DIM: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct SliceMeta {
@@ -60,14 +65,6 @@ impl Cell {
 #[derive(Resource)]
 pub struct SourceImage(Handle<Aseprite>);
 
-#[derive(Resource)]
-pub struct WFC {
-    rng: rand::rngs::StdRng,
-    aseprite: Handle<Aseprite>,
-    pub tiles: Vec<Tile>,
-    pub grid: Vec<Cell>,
-}
-
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(ImagePlugin {
@@ -76,8 +73,8 @@ fn main() {
         .add_plugins(AsepriteUltraPlugin)
         .add_systems(Startup, setup)
         .add_systems(Update, update.run_if(resource_exists::<SourceImage>))
-        .add_systems(Update, main_loop.run_if(resource_exists::<WFC>))
-        .add_systems(Update, rebuild.run_if(not(resource_exists::<WFC>)))
+        .add_systems(Update, rebuild)
+        .add_systems(Update, handle_tasks)
         .run();
 }
 
@@ -108,6 +105,9 @@ fn rebuild(
     }
 }
 
+#[derive(Component)]
+struct ComputeTransform(Task<CommandQueue>);
+
 fn update(
     mut commands: Commands,
     aseprites: Res<Assets<Aseprite>>,
@@ -121,21 +121,15 @@ fn update(
 
             let mut tiles: Vec<Tile> = Vec::new();
 
-            for (slice_name, slice_meta) in aseprite.slices.iter() {
-                // 上辺のピクセル
-                // println!("slice: {:?}", slice_name);
+            let aseplite_cloned = source.0.clone();
 
+            for (slice_name, slice_meta) in aseprite.slices.iter() {
                 if slice_meta.rect.width() as u32 != SLICE_WIDTH
                     || slice_meta.rect.height() as u32 != SLICE_HEIGHT
                 {
                     error!("slice size is not 16x16");
                     continue;
                 }
-
-                // for x in 0..slice_width {
-                //     let y = slice_meta.rect.min.y as u32;
-                //     println!("pixel: {:?}", image.get_color_at(x, y));
-                // }
 
                 tiles.push(Tile {
                     slice_name: slice_name.clone(),
@@ -155,28 +149,70 @@ fn update(
             // スライスはランダムになっているので注意
             tiles.sort_by(|a, b| a.slice_name.cmp(&b.slice_name));
 
-            for tile in tiles.iter() {
-                println!("slice: {:?}", tile.slice_name);
-            }
-
             generating_adjacency_rules(&mut tiles, &image);
 
-            let grid: Vec<Cell> = init_grid(aseprite.slices.len());
+            let mut grid: Vec<Cell> = init_grid(aseprite.slices.len());
             let seed: [u8; 32] = [13; 32];
             // let rng = rand::SeedableRng::from_seed(seed);
-            let rng = rand::SeedableRng::from_entropy();
+            let mut rng = rand::SeedableRng::from_entropy();
 
-            commands.insert_resource(WFC {
-                rng,
-                aseprite: source.0.clone(),
-                tiles,
-                grid,
+            let thread_pool = AsyncComputeTaskPool::get();
+            let entity = commands.spawn_empty().id();
+            let task: Task<CommandQueue> = thread_pool.spawn(async move {
+                loop {
+                    // エントロピーの低い(socketsが少ない、最も選択肢の少ない)セルを選択
+                    let mut low_entropy_grid = pick_cell_with_least_entropy(&mut grid);
+
+                    if low_entropy_grid.is_empty() {
+                        break;
+                    }
+
+                    // 候補からひとつをランダムに選択
+                    if !random_selection_of_sockets(&mut rng, &mut low_entropy_grid) {
+                        // 候補が見つからない場合は最初からやり直し
+                        grid = init_grid(tiles.len());
+                        // warn!("restart");
+                        continue;
+                    }
+
+                    wave_collapse(&mut grid, &tiles);
+                }
+
+                let mut command_queue = CommandQueue::default();
+                command_queue.push(move |world: &mut World| {
+                    world.entity_mut(entity).remove::<ComputeTransform>();
+
+                    for cell in grid.iter() {
+                        world.spawn((
+                            AseSpriteSlice {
+                                aseprite: aseplite_cloned.clone(),
+                                name: tiles[cell.sockets[0]].slice_name.clone(),
+                            },
+                            Transform::from_translation(Vec3::new(
+                                (cell.index % DIM) as f32 * SLICE_WIDTH as f32,
+                                (cell.index / DIM) as f32 * SLICE_HEIGHT as f32 * -1.0,
+                                0.0,
+                            )),
+                        ));
+                    }
+                });
+                command_queue
             });
+            commands.entity(entity).insert(ComputeTransform(task));
         }
     }
 }
 
-fn generating_adjacency_rules(mut tiles: &mut Vec<Tile>, image: &Image) {
+fn handle_tasks(mut commands: Commands, mut transform_tasks: Query<&mut ComputeTransform>) {
+    for mut task in transform_tasks.iter_mut() {
+        if let Some(mut commands_queue) = block_on(future::poll_once(&mut task.0)) {
+            // append the returned command queue to have it execute later
+            commands.append(&mut commands_queue);
+        }
+    }
+}
+
+fn generating_adjacency_rules(tiles: &mut Vec<Tile>, image: &Image) {
     // 他のタイルと辺を比較し、接続可能かどうかを調べます
     let cloned = tiles.clone();
     for (current_index, current) in tiles.iter_mut().enumerate() {
@@ -236,8 +272,6 @@ fn generating_adjacency_rules(mut tiles: &mut Vec<Tile>, image: &Image) {
                 }
             }
         }
-
-        // panic!("停止");
     }
 }
 
@@ -277,44 +311,6 @@ fn init_grid(length: usize) -> Vec<Cell> {
     // }
 
     grid
-}
-
-fn main_loop(mut commands: Commands, wfc: ResMut<WFC>) {
-    let inner = wfc.into_inner();
-    for _ in 0..100 {
-        // エントロピーの低い(socketsが少ない、最も選択肢の少ない)セルを選択
-        let mut low_entropy_grid = pick_cell_with_least_entropy(&mut inner.grid);
-
-        if low_entropy_grid.is_empty() {
-            for cell in inner.grid.iter() {
-                commands.spawn((
-                    AseSpriteSlice {
-                        aseprite: inner.aseprite.clone(),
-                        name: inner.tiles[cell.sockets[0]].slice_name.clone(),
-                    },
-                    Transform::from_translation(Vec3::new(
-                        (cell.index % DIM) as f32 * SLICE_WIDTH as f32,
-                        (cell.index / DIM) as f32 * SLICE_HEIGHT as f32 * -1.0,
-                        0.0,
-                    )),
-                ));
-            }
-
-            commands.remove_resource::<WFC>();
-
-            return;
-        }
-
-        // 候補からひとつをランダムに選択
-        if !random_selection_of_sockets(&mut inner.rng, &mut low_entropy_grid) {
-            // 候補が見つからない場合は最初からやり直し
-            inner.grid = init_grid(inner.tiles.len());
-            // warn!("restart");
-            return;
-        }
-
-        wave_collapse(&mut inner.grid, &inner.tiles);
-    }
 }
 
 pub fn pick_cell_with_least_entropy(grid: &mut Vec<Cell>) -> Vec<&mut Cell> {
